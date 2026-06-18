@@ -1,0 +1,24 @@
+# Claude / editor
+.claude/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & temp
+*.log
+*.tmp
+tmp/
+node_modules/
+
+# Build / release artifacts (releases live on GitHub Releases, not in git)
+dist/
+*.zip
+*.tar.gz
+*.dmg
+*.AppImage
+*.exe
+*.msi
+latest.json

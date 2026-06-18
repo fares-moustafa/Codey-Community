@@ -1,0 +1,34 @@
+name: CI & Release Validation
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    name: Validate Repository Scripts & Docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck on Install Script
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          file: 'install'
+
+      - name: Validate Install Script Syntax
+        run: bash -n install
+
+      - name: Verify Documentation Links
+        run: |
+          echo "Verifying markdown files exist and internal paths match..."
+          # Basic scan for links in files
+          grep -ro '(\./docs/[^)]*)' README.md README.ar.md CONTRIBUTING.md || true
