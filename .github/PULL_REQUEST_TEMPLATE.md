@@ -26,4 +26,4 @@ Please check all that apply:
 - [ ] My change is focused and addresses the issue directly.
 - [ ] Markdown files are clean and render correctly on GitHub.
 - [ ] No secret keys or credentials are included in this PR.
-- [ ] I agree to license my contribution under the project's [MIT License](./LICENSE).
+- [ ] I understand Codey is closed-source and I am contributing documentation, feedback, or shared configurations only.

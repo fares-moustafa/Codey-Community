@@ -1,454 +1,367 @@
 #!/usr/bin/env bash
 set -euo pipefail
-APP=Codey
+
+APP="codey"
+REPO="fares-moustafa/Codey-Community"
+INSTALL_DIR="${CODEY_INSTALL_DIR:-$HOME/.codey/bin}"
+VERSION="${VERSION:-}"
+NO_MODIFY_PATH=false
+SKIP_CHECKSUM="${CODEY_SKIP_CHECKSUM:-false}"
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'
+GREEN='\033[0;32m'
 ORANGE='\033[38;5;214m'
-NC='\033[0m' # No Color
+CYAN='\033[0;36m'
+NC='\033[0m'
 
 usage() {
     cat <<EOF
-Codey Installer
+Codey CLI Installer
+
+Install the AI coding agent for the terminal.
 
 Usage: install [options]
 
 Options:
-    -h, --help              Display this help message
-    -v, --version <version> Install a specific version (e.g., 3.5.1)
-    -b, --binary <path>     Install from a local binary instead of downloading
-        --no-modify-path    Don't modify shell config files (.zshrc, .bashrc, etc.)
+    -h, --help              Show this help
+    -v, --version <ver>     Install a specific version (e.g., 3.6.0)
+    -b, --binary <path>     Install from a local binary
+        --no-modify-path    Don't modify shell config files
+        --dir <path>        Install directory (default: ~/.codey/bin)
 
 Environment:
-    CODEY_RELEASE_REPO      Override the GitHub release host
-                            (default: fares-moustafa/Codey-Community)
-    VERSION                 Same as --version
+    VERSION=x.y.z           Same as --version (used by 'codey upgrade')
+    CODEY_INSTALL_DIR=path  Override the install directory
+    CODEY_SKIP_CHECKSUM=1   Skip SHA256 verification (not recommended)
 
 Examples:
-    curl -fsSL https://raw.githubusercontent.com/fares-moustafa/Codey-Community/main/install | bash
-    curl -fsSL https://raw.githubusercontent.com/fares-moustafa/Codey-Community/main/install | bash -s -- --version 3.5.1
-    ./install --binary /path/to/codey
+    curl -fsSL https://codeyai.space/install | bash
+    curl -fsSL https://codeyai.space/install | bash -s -- --version 3.6.0
+    ./install --binary ./codey
 EOF
 }
 
-requested_version=${VERSION:-}
-no_modify_path=false
-binary_path=""
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -h|--help)
-            usage
-            exit 0
-            ;;
+        -h|--help) usage; exit 0 ;;
         -v|--version)
-            if [[ -n "${2:-}" ]]; then
-                requested_version="$2"
-                shift 2
-            else
-                echo -e "${RED}Error: --version requires a version argument${NC}"
-                exit 1
-            fi
-            ;;
+            [ -n "${2:-}" ] || { echo -e "${RED}--version requires a value${NC}" >&2; exit 1; }
+            VERSION="$2"; shift 2 ;;
         -b|--binary)
-            if [[ -n "${2:-}" ]]; then
-                binary_path="$2"
-                shift 2
-            else
-                echo -e "${RED}Error: --binary requires a path argument${NC}"
-                exit 1
-            fi
-            ;;
-        --no-modify-path)
-            no_modify_path=true
-            shift
-            ;;
-        *)
-            echo -e "${ORANGE}Warning: Unknown option '$1'${NC}" >&2
-            shift
-            ;;
+            [ -n "${2:-}" ] || { echo -e "${RED}--binary requires a value${NC}" >&2; exit 1; }
+            BINARY_PATH="$2"; shift 2 ;;
+        --no-modify-path) NO_MODIFY_PATH=true; shift ;;
+        --dir)
+            [ -n "${2:-}" ] || { echo -e "${RED}--dir requires a value${NC}" >&2; exit 1; }
+            INSTALL_DIR="$2"; shift 2 ;;
+        *) echo -e "${ORANGE}Warning: Unknown option '$1'${NC}" >&2; shift ;;
     esac
 done
 
-INSTALL_DIR=$HOME/.codey/bin
-mkdir -p "$INSTALL_DIR"
-
-# If --binary is provided, skip all download/detection logic
-if [ -n "$binary_path" ]; then
-    if [ ! -f "$binary_path" ]; then
-        echo -e "${RED}Error: Binary not found at ${binary_path}${NC}"
-        exit 1
-    fi
-    specific_version="local"
-else
+detect_platform() {
     raw_os=$(uname -s)
     os=$(echo "$raw_os" | tr '[:upper:]' '[:lower:]')
     case "$raw_os" in
-      Darwin*) os="darwin" ;;
-      Linux*) os="linux" ;;
-      MINGW*|MSYS*|CYGWIN*) os="windows" ;;
+        Darwin*) os="darwin" ;;
+        Linux*)  os="linux" ;;
+        MINGW*|MSYS*|CYGWIN*) os="windows" ;;
     esac
 
     arch=$(uname -m)
-    if [[ "$arch" == "aarch64" ]]; then
-      arch="arm64"
-    fi
-    if [[ "$arch" == "x86_64" ]]; then
-      arch="x64"
-    fi
-
-    if [ "$os" = "darwin" ] && [ "$arch" = "x64" ]; then
-      rosetta_flag=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
-      if [ "$rosetta_flag" = "1" ]; then
-        arch="arm64"
-      fi
-    fi
-
-    combo="$os-$arch"
-    case "$combo" in
-      linux-x64|linux-arm64|darwin-x64|darwin-arm64|windows-x64)
-        ;;
-      *)
-        echo -e "${RED}Unsupported OS/Arch: $os/$arch${NC}"
-        exit 1
-        ;;
+    case "$arch" in
+        aarch64|arm64) arch="arm64" ;;
+        x86_64|amd64)  arch="x64" ;;
+        *) echo -e "${RED}Unsupported architecture: $arch${NC}"; exit 1 ;;
     esac
 
-    archive_ext=".zip"
-    if [ "$os" = "linux" ]; then
-      archive_ext=".tar.gz"
+    # Under Rosetta 2 an x64 shell should install the native arm64 build.
+    if [ "$os" = "darwin" ] && [ "$arch" = "x64" ]; then
+        rosetta_flag=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
+        if [ "$rosetta_flag" = "1" ]; then
+            arch="arm64"
+        fi
     fi
 
     is_musl=false
     if [ "$os" = "linux" ]; then
-      if [ -f /etc/alpine-release ]; then
-        is_musl=true
-      fi
-
-      if command -v ldd >/dev/null 2>&1; then
-        if ldd --version 2>&1 | grep -qi musl; then
-          is_musl=true
+        if [ -f /etc/alpine-release ]; then
+            is_musl=true
+        elif command -v ldd >/dev/null 2>&1; then
+            if ldd --version 2>&1 | grep -qi musl; then
+                is_musl=true
+            fi
         fi
-      fi
     fi
 
+    # Older x64 CPUs without AVX2 need the baseline build.
     needs_baseline=false
     if [ "$arch" = "x64" ]; then
-      if [ "$os" = "linux" ]; then
-        if ! grep -qi avx2 /proc/cpuinfo 2>/dev/null; then
-          needs_baseline=true
+        if [ "$os" = "linux" ] && [ -f /proc/cpuinfo ]; then
+            if ! grep -qi avx2 /proc/cpuinfo 2>/dev/null; then
+                needs_baseline=true
+            fi
         fi
-      fi
-
-      if [ "$os" = "darwin" ]; then
-        avx2=$(sysctl -n hw.optional.avx2_0 2>/dev/null || echo 0)
-        if [ "$avx2" != "1" ]; then
-          needs_baseline=true
+        if [ "$os" = "darwin" ]; then
+            avx2=$(sysctl -n hw.optional.avx2_0 2>/dev/null || echo 0)
+            if [ "$avx2" != "1" ]; then
+                needs_baseline=true
+            fi
         fi
-      fi
+        if [ "$os" = "windows" ]; then
+            ps='(Add-Type -MemberDefinition "[DllImport(""kernel32.dll"")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);" -Name Kernel32 -Namespace Win32 -PassThru)::IsProcessorFeaturePresent(40)'
+            out=""
+            if command -v powershell.exe >/dev/null 2>&1; then
+                out=$(powershell.exe -NoProfile -NonInteractive -Command "$ps" 2>/dev/null || true)
+            elif command -v pwsh >/dev/null 2>&1; then
+                out=$(pwsh -NoProfile -NonInteractive -Command "$ps" 2>/dev/null || true)
+            fi
+            out=$(echo "$out" | tr -d '\r' | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+            if [ "$out" != "true" ] && [ "$out" != "1" ]; then
+                needs_baseline=true
+            fi
+        fi
     fi
 
     target="$os-$arch"
     if [ "$needs_baseline" = "true" ]; then
-      target="$target-baseline"
+        target="$target-baseline"
     fi
     if [ "$is_musl" = "true" ]; then
-      target="$target-musl"
+        target="$target-musl"
     fi
 
-    filename="codey-$target$archive_ext"
+    archive_ext=".tar.gz"
+    [ "$os" != "linux" ] && archive_ext=".zip"
 
+    echo "$os|$arch|$target|$archive_ext"
+}
 
-    if [ "$os" = "linux" ]; then
-        if ! command -v tar >/dev/null 2>&1; then
-             echo -e "${RED}Error: 'tar' is required but not installed.${NC}"
-             exit 1
-        fi
-    else
-        if ! command -v unzip >/dev/null 2>&1; then
-            echo -e "${RED}Error: 'unzip' is required but not installed.${NC}"
-            exit 1
-        fi
+IFS='|' read -r os arch target archive_ext <<< "$(detect_platform)"
+
+if [ -n "${BINARY_PATH:-}" ]; then
+    if [ ! -f "$BINARY_PATH" ]; then
+        echo -e "${RED}Binary not found: $BINARY_PATH${NC}"
+        exit 1
     fi
-
-    # Release host (override with CODEY_RELEASE_REPO for forks/mirrors)
-    release_repo="${CODEY_RELEASE_REPO:-fares-moustafa/Codey-Community}"
-
-    if [ -z "$requested_version" ]; then
-        url="https://github.com/${release_repo}/releases/latest/download/$filename"
-        specific_version=$(curl -s "https://api.github.com/repos/${release_repo}/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-
-        if [[ $? -ne 0 || -z "$specific_version" ]]; then
-            echo -e "${RED}Failed to fetch version information${NC}"
-            exit 1
-        fi
-    else
-        # Strip leading 'v' if present
-        requested_version="${requested_version#v}"
-        url="https://github.com/${release_repo}/releases/download/v${requested_version}/$filename"
-        specific_version=$requested_version
-
-        # Verify the release exists before downloading
-        http_status=$(curl -sI -o /dev/null -w "%{http_code}" "https://github.com/${release_repo}/releases/tag/v${requested_version}")
-        if [ "$http_status" = "404" ]; then
-            echo -e "${RED}Error: Release v${requested_version} not found${NC}"
-            echo -e "${MUTED}Available releases: https://github.com/${release_repo}/releases${NC}"
-            exit 1
-        fi
-    fi
-fi
-
-print_message() {
-    local level=$1
-    local message=$2
-    local color=""
-
-    case $level in
-        info) color="${NC}" ;;
-        warning) color="${NC}" ;;
-        error) color="${RED}" ;;
+    specific_version="local"
+else
+    case "$target" in
+        linux-arm64|linux-x64|linux-x64-baseline|linux-arm64-musl|linux-x64-musl|linux-x64-baseline-musl|darwin-arm64|darwin-x64|darwin-x64-baseline|windows-arm64|windows-x64|windows-x64-baseline) ;;
+        *) echo -e "${RED}Unsupported platform target: $target${NC}"; exit 1 ;;
     esac
 
-    echo -e "${color}${message}${NC}"
-}
+    if ! command -v curl >/dev/null 2>&1; then
+        echo -e "${RED}curl is required but not installed${NC}"
+        exit 1
+    fi
 
-check_version() {
-    if command -v codey >/dev/null 2>&1; then
-        codey_path=$(which codey)
-
-        ## Check the installed version
-        installed_version=$(codey --version 2>/dev/null || echo "")
-
-        if [[ "$installed_version" != "$specific_version" ]]; then
-            print_message info "${MUTED}Installed version: ${NC}$installed_version."
+    # Resolve the version to install.
+    if [ -z "$VERSION" ]; then
+        echo -e "${MUTED}Fetching latest version...${NC}"
+        release_json=$(curl -sfL --max-time 15 \
+            -H "Accept: application/vnd.github+json" \
+            -H "User-Agent: codey-installer" \
+            "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null || true)
+        VERSION=$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n 1)
+        if [ -z "$VERSION" ]; then
+            # API rate-limited or unreachable: install straight from the
+            # /releases/latest/download alias, which never needs the API.
+            echo -e "${MUTED}Could not reach the GitHub API, falling back to the latest release${NC}"
+            VERSION="latest"
         else
-            print_message info "${MUTED}Version ${NC}$specific_version${MUTED} already installed"
-            exit 0
+            echo -e "${GREEN}Latest version: $VERSION${NC}"
         fi
     fi
-}
 
-unbuffered_sed() {
-    if echo | sed -u -e "" >/dev/null 2>&1; then
-        sed -nu "$@"
-    elif echo | sed -l -e "" >/dev/null 2>&1; then
-        sed -nl "$@"
+    VERSION="${VERSION#v}"
+
+    if [ "$VERSION" = "latest" ]; then
+        VERSION=""
+        DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$APP-$target$archive_ext"
     else
-        local pad="$(printf "\n%512s" "")"
-        sed -ne "s/$/\\${pad}/" "$@"
+        specific_version="$VERSION"
+        DOWNLOAD_URL="https://github.com/$REPO/releases/download/v$VERSION/$APP-$target$archive_ext"
     fi
-}
+    FILENAME="$APP-$target$archive_ext"
 
-print_progress() {
-    local bytes="$1"
-    local length="$2"
-    [ "$length" -gt 0 ] || return 0
+    echo -e "${MUTED}Downloading $APP ${specific_version:-latest} for $target...${NC}"
 
-    local width=50
-    local percent=$(( bytes * 100 / length ))
-    [ "$percent" -gt 100 ] && percent=100
-    local on=$(( percent * width / 100 ))
-    local off=$(( width - on ))
-
-    local filled=$(printf "%*s" "$on" "")
-    filled=${filled// /#}
-    local empty=$(printf "%*s" "$off" "")
-    empty=${empty// /-}
-
-    printf "\r${ORANGE}%s%s %3d%%${NC}" "$filled" "$empty" "$percent" >&4
-}
-
-download_with_progress() {
-    local url="$1"
-    local output="$2"
-
-    if [ -t 2 ]; then
-        exec 4>&2
-    else
-        exec 4>/dev/null
-    fi
-
-    local tmp_dir=${TMPDIR:-/tmp}
-    local basename="${tmp_dir}/Codey_install_$$"
-    local tracefile="${basename}.trace"
-
-    rm -f "$tracefile"
-    mkfifo "$tracefile"
-
-    # Hide cursor
-    printf "\033[?25l" >&4
-
-    trap "trap - RETURN; rm -f \"$tracefile\"; printf '\033[?25h' >&4; exec 4>&-" RETURN
-
-    (
-        curl --trace-ascii "$tracefile" -s -L -o "$output" "$url"
-    ) &
-    local curl_pid=$!
-
-    unbuffered_sed \
-        -e 'y/ACDEGHLNORTV/acdeghlnortv/' \
-        -e '/^0000: content-length:/p' \
-        -e '/^<= recv data/p' \
-        "$tracefile" | \
-    {
-        local length=0
-        local bytes=0
-
-        while IFS=" " read -r -a line; do
-            [ "${#line[@]}" -lt 2 ] && continue
-            local tag="${line[0]} ${line[1]}"
-
-            if [ "$tag" = "0000: content-length:" ]; then
-                length="${line[2]}"
-                length=$(echo "$length" | tr -d '\r')
-                bytes=0
-            elif [ "$tag" = "<= recv" ]; then
-                local size="${line[3]}"
-                bytes=$(( bytes + size ))
-                if [ "$length" -gt 0 ]; then
-                    print_progress "$bytes" "$length"
-                fi
-            fi
-        done
-    }
-
-    wait $curl_pid
-    local ret=$?
-    echo "" >&4
-    return $ret
-}
-
-download_and_install() {
-    print_message info "\n${MUTED}Installing ${NC}Codey ${MUTED}version: ${NC}$specific_version"
-    local tmp_dir="${TMPDIR:-/tmp}/Codey_install_$$"
-    mkdir -p "$tmp_dir"
-
-    if [[ "$os" == "windows" ]] || ! [ -t 2 ] || ! download_with_progress "$url" "$tmp_dir/$filename"; then
-        # Fallback to standard curl on Windows, non-TTY environments, or if custom progress fails
-        curl -# -L -o "$tmp_dir/$filename" "$url"
-    fi
-
-    if [ "$os" = "linux" ]; then
-        tar -xzf "$tmp_dir/$filename" -C "$tmp_dir"
-    else
-        unzip -q "$tmp_dir/$filename" -d "$tmp_dir"
-    fi
-
-    mv "$tmp_dir/codey" "$INSTALL_DIR"
-    chmod 755 "${INSTALL_DIR}/codey"
-    rm -rf "$tmp_dir"
-}
-
-install_from_binary() {
-    print_message info "\n${MUTED}Installing ${NC}Codey ${MUTED}from: ${NC}$binary_path"
-    cp "$binary_path" "${INSTALL_DIR}/codey"
-    chmod 755 "${INSTALL_DIR}/codey"
-}
-
-if [ -n "$binary_path" ]; then
-    install_from_binary
-else
-    check_version
-    download_and_install
 fi
 
+mkdir -p "$INSTALL_DIR"
+binary_name="$APP"
+[ "$os" = "windows" ] && binary_name="$APP.exe"
+install_tmp="$INSTALL_DIR/.${binary_name}.new.$$"
+
+cleanup() {
+    [ -n "${tmp_dir:-}" ] && [ -d "$tmp_dir" ] && rm -rf "$tmp_dir"
+    [ -f "$install_tmp" ] && rm -f "$install_tmp"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+if [ -n "${specific_version:-}" ]; then
+    installed_version=""
+    if [ -x "$INSTALL_DIR/$binary_name" ]; then
+        installed_version=$("$INSTALL_DIR/$binary_name" --version 2>/dev/null || true)
+    elif command -v "$APP" >/dev/null 2>&1; then
+        installed_version=$("$APP" --version 2>/dev/null || true)
+    fi
+    if [ "$installed_version" = "$specific_version" ]; then
+        echo -e "${GREEN}Codey CLI v$specific_version is already installed${NC}"
+        exit 0
+    fi
+fi
+
+if [ -n "${BINARY_PATH:-}" ]; then
+    cp "$BINARY_PATH" "$install_tmp"
+else
+    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/${APP}_install.XXXXXX")
+
+    if ! curl --fail --location --progress-bar --retry 3 --retry-delay 1 -o "$tmp_dir/$FILENAME" "$DOWNLOAD_URL"; then
+        echo -e "${RED}Failed to download release asset:${NC}"
+        echo -e "${MUTED}$DOWNLOAD_URL${NC}"
+        exit 1
+    fi
+
+    echo ""
+    # Verify the archive before extracting anything from it.
+    if [ -n "${specific_version:-}" ]; then
+        sums_url="https://github.com/$REPO/releases/download/v$specific_version/SHA256SUMS.txt"
+    else
+        sums_url="https://github.com/$REPO/releases/latest/download/SHA256SUMS.txt"
+    fi
+    if [ "$SKIP_CHECKSUM" != "1" ] && [ "$SKIP_CHECKSUM" != "true" ]; then
+        if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+            echo -e "${RED}No SHA256 tool found (sha256sum or shasum required)${NC}"
+            exit 1
+        fi
+        if ! curl -sfL --max-time 15 -o "$tmp_dir/SHA256SUMS.txt" "$sums_url"; then
+            echo -e "${RED}Could not download SHA256SUMS.txt for this release${NC}"
+            exit 1
+        fi
+        expected=$(awk -v file="$FILENAME" '$2 == file { print $1; exit }' "$tmp_dir/SHA256SUMS.txt")
+        if ! printf '%s' "$expected" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+            echo -e "${RED}No valid checksum was published for $FILENAME${NC}"
+            exit 1
+        fi
+        if command -v sha256sum >/dev/null 2>&1; then
+            actual=$(sha256sum "$tmp_dir/$FILENAME" | awk '{print $1}')
+        else
+            actual=$(shasum -a 256 "$tmp_dir/$FILENAME" | awk '{print $1}')
+        fi
+        if [ "$actual" != "$expected" ]; then
+            echo -e "${RED}Checksum mismatch for $FILENAME${NC}"
+            echo -e "${RED}  expected: $expected${NC}"
+            echo -e "${RED}  actual:   $actual${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}✓ Checksum verified${NC}"
+    fi
+
+    echo -e "${MUTED}Extracting...${NC}"
+    if [ "$archive_ext" = ".tar.gz" ]; then
+        command -v tar >/dev/null 2>&1 || { echo -e "${RED}tar is required${NC}"; exit 1; }
+        tar -xzf "$tmp_dir/$FILENAME" -C "$tmp_dir"
+    elif command -v unzip >/dev/null 2>&1; then
+        unzip -qo "$tmp_dir/$FILENAME" -d "$tmp_dir"
+    elif command -v tar >/dev/null 2>&1; then
+        tar -xof "$tmp_dir/$FILENAME" -C "$tmp_dir"
+    elif [ "$os" = "windows" ] && command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -NoProfile -Command "Expand-Archive -Force '$(cygpath -w "$tmp_dir/$FILENAME" 2>/dev/null || echo "$tmp_dir/$FILENAME")' '$(cygpath -w "$tmp_dir" 2>/dev/null || echo "$tmp_dir")'"
+    else
+        echo -e "${RED}Neither unzip nor tar found; cannot extract the archive${NC}"
+        exit 1
+    fi
+
+    # The archive contains the binary at its root (codey / codey.exe).
+    if [ -f "$tmp_dir/$APP" ]; then
+        mv "$tmp_dir/$APP" "$install_tmp"
+    elif [ -f "$tmp_dir/bin/$APP" ]; then
+        mv "$tmp_dir/bin/$APP" "$install_tmp"
+    elif [ -f "$tmp_dir/$APP.exe" ]; then
+        mv "$tmp_dir/$APP.exe" "$install_tmp"
+    elif [ -f "$tmp_dir/bin/$APP.exe" ]; then
+        mv "$tmp_dir/bin/$APP.exe" "$install_tmp"
+    else
+        echo -e "${RED}Binary not found in archive${NC}"
+        ls -la "$tmp_dir"
+        exit 1
+    fi
+fi
+
+chmod 755 "$install_tmp"
+mv -f "$install_tmp" "$INSTALL_DIR/$binary_name"
+echo -e "${GREEN}✓ Downloaded and installed${NC}"
+
+echo -e "${GREEN}✓ Installed to: $INSTALL_DIR${NC}"
+
+if "$INSTALL_DIR/$binary_name" --version >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ Binary verified: $("$INSTALL_DIR/$binary_name" --version 2>/dev/null)${NC}"
+else
+    echo -e "${ORANGE}Warning: could not verify binary${NC}"
+fi
 
 add_to_path() {
     local config_file=$1
     local command=$2
-
-    if grep -Fxq "$command" "$config_file"; then
-        print_message info "Command already exists in $config_file, skipping write."
-    elif [[ -w $config_file ]]; then
-        echo -e "\n# Codey" >> "$config_file"
+    if grep -Fxq "$command" "$config_file" 2>/dev/null; then
+        return
+    fi
+    if [ -w "$config_file" ]; then
+        echo "" >> "$config_file"
+        echo "# Codey CLI" >> "$config_file"
         echo "$command" >> "$config_file"
-        print_message info "${MUTED}Successfully added ${NC}Codey ${MUTED}to \$PATH in ${NC}$config_file"
-    else
-        print_message warning "Manually add the directory to $config_file (or similar):"
-        print_message info "  $command"
+        echo -e "${GREEN}✓ Added to PATH in $config_file${NC}"
     fi
 }
 
-XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+if [ "$NO_MODIFY_PATH" != "true" ]; then
+    case ":${PATH}:" in
+        *:"${INSTALL_DIR}":*) ;;
+        *)
+            current_shell=$(basename "${SHELL:-bash}")
+            config_candidates=()
+            case "$current_shell" in
+                fish) config_candidates=("$HOME/.config/fish/config.fish") ;;
+                zsh)  config_candidates=("${ZDOTDIR:-$HOME}/.zshrc") ;;
+                bash) config_candidates=("$HOME/.bashrc" "$HOME/.bash_profile") ;;
+                *)    config_candidates=("$HOME/.profile") ;;
+            esac
 
-current_shell=$(basename "$SHELL")
-case $current_shell in
-    fish)
-        config_files="$HOME/.config/fish/config.fish"
-    ;;
-    zsh)
-        config_files="${ZDOTDIR:-$HOME}/.zshrc ${ZDOTDIR:-$HOME}/.zshenv $XDG_CONFIG_HOME/zsh/.zshrc $XDG_CONFIG_HOME/zsh/.zshenv"
-    ;;
-    bash)
-        config_files="$HOME/.bashrc $HOME/.bash_profile $HOME/.profile $XDG_CONFIG_HOME/bash/.bashrc $XDG_CONFIG_HOME/bash/.bash_profile"
-    ;;
-    ash)
-        config_files="$HOME/.ashrc $HOME/.profile /etc/profile"
-    ;;
-    sh)
-        config_files="$HOME/.ashrc $HOME/.profile /etc/profile"
-    ;;
-    *)
-        # Default case if none of the above matches
-        config_files="$HOME/.bashrc $HOME/.bash_profile $XDG_CONFIG_HOME/bash/.bashrc $XDG_CONFIG_HOME/bash/.bash_profile"
-    ;;
-esac
+            found=false
+            for file in "${config_candidates[@]}"; do
+                if [ -f "$file" ]; then
+                    case "$current_shell" in
+                        fish) add_to_path "$file" "fish_add_path $INSTALL_DIR" ;;
+                        *)    add_to_path "$file" "export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
+                    esac
+                    found=true
+                    break
+                fi
+            done
 
-if [[ "$no_modify_path" != "true" ]]; then
-    config_file=""
-    for file in $config_files; do
-        if [[ -f $file ]]; then
-            config_file=$file
-            break
-        fi
-    done
+            if [ "$found" = false ]; then
+                echo -e "${ORANGE}Could not find a shell config. Add to PATH manually:${NC}"
+                echo -e "  export PATH=\"$INSTALL_DIR:\$PATH\""
+            fi
 
-    if [[ -z $config_file ]]; then
-        print_message warning "No config file found for $current_shell. You may need to manually add to PATH:"
-        print_message info "  export PATH=$INSTALL_DIR:\$PATH"
-    elif [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        case $current_shell in
-            fish)
-                add_to_path "$config_file" "fish_add_path $INSTALL_DIR"
+            if [ "$os" = "windows" ]; then
+                echo -e "${MUTED}For PowerShell/cmd, add to your user PATH:${NC}"
+                echo -e "  $INSTALL_DIR"
+            fi
             ;;
-            zsh)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-            ;;
-            bash)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-            ;;
-            ash)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-            ;;
-            sh)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-            ;;
-            *)
-                export PATH=$INSTALL_DIR:$PATH
-                print_message warning "Manually add the directory to $config_file (or similar):"
-                print_message info "  export PATH=$INSTALL_DIR:\$PATH"
-            ;;
-        esac
-    fi
+    esac
 fi
 
-if [ -n "${GITHUB_ACTIONS-}" ] && [ "${GITHUB_ACTIONS}" == "true" ]; then
-    echo "$INSTALL_DIR" >> $GITHUB_PATH
-    print_message info "Added $INSTALL_DIR to \$GITHUB_PATH"
-fi
+echo ""
+echo -e "${GREEN}Codey CLI installed!${NC}"
+echo ""
+echo -e "Run ${GREEN}codey${NC} in any project directory to start."
+echo -e "${MUTED}Check for updates anytime with: codey upgrade --check${NC}"
+echo ""
 
-echo -e ""
-echo -e "${ORANGE}   ____          _            ${NC}"
-echo -e "${ORANGE}  / ___|___   __| | ___ _   _ ${NC}"
-echo -e "${ORANGE} | |   / _ \\ / _\` |/ _ \\ | | |${NC}"
-echo -e "${ORANGE} | |__| (_) | (_| |  __/ |_| |${NC}"
-echo -e "${ORANGE}  \\____\\___/ \\__,_|\\___|\\__, |${NC}"
-echo -e "${ORANGE}                        |___/ ${NC}"
-echo -e ""
-echo -e "${MUTED}Codey includes free models, to start:${NC}"
-echo -e ""
-echo -e "cd <project>  ${MUTED}# Open directory${NC}"
-echo -e "codey         ${MUTED}# Run command${NC}"
-echo -e ""
-echo -e "${MUTED}Community & docs: ${NC}https://github.com/fares-moustafa/Codey-Community"
-echo -e ""
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+fi

@@ -27,8 +27,16 @@ jobs:
       - name: Validate Install Script Syntax
         run: bash -n install
 
-      - name: Verify Documentation Links
+      - name: Check README local links
         run: |
-          echo "Verifying markdown files exist and internal paths match..."
-          # Basic scan for links in files
-          grep -ro '(\./docs/[^)]*)' README.md README.ar.md CONTRIBUTING.md || true
+          fail=0
+          refs="$(grep -o '](\./[^)]*)' README.md | sed 's/](//;s/)$//' || true)
+          $(grep -oE '(src|srcset)="\./[^"]*"' README.md | sed 's/.*="//;s/"$//' || true)"
+          for link in $refs; do
+            path="${link#./}"
+            if [ ! -e "$path" ]; then
+              echo "::error::README.md references a missing file: $link"
+              fail=1
+            fi
+          done
+          exit $fail

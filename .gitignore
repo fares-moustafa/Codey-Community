@@ -21,4 +21,9 @@ dist/
 *.AppImage
 *.exe
 *.msi
+*.sig
 latest.json
+
+# Codey local state (per-machine, never part of this repo)
+.codey/
+plans/

@@ -17,7 +17,7 @@ Describe what you are trying to configure or install, and where you got stuck.
 
 ### 📄 Configuration Files
 Provide relevant parts of your config files (make sure to **remove all API keys and secrets**!).
-* Config path (e.g. `~/.codey/config.json`)
+* Config path — global: `~/.config/codey/codey.json` · project: `./codey.json` (or `codey.jsonc`)
 * Configuration snippet:
 ```json
 // Paste config here (sanitize secrets!)
@@ -25,11 +25,12 @@ Provide relevant parts of your config files (make sure to **remove all API keys 
 
 ### 💻 System & Version details
 * **OS**: macOS / Windows / Linux (specify version)
-* **Codey Version**: (e.g. `v3.5.1`)
-* **Installed via**: (e.g. install script, npm, bun, Homebrew, desktop dmg)
+* **Codey Version**: Run `codey --version` (e.g. `v3.6.2`)
+* **Installed via**: curl installer · desktop `.dmg` / `.exe` · `codey upgrade`
+* **Tier**: Free / Pro
 
 ### 📋 Diagnostic Logs
-Paste any CLI error logs or output here:
+Logs live in `~/.local/share/codey/log`. Paste any CLI error output here:
 ```
 // Paste logs here
 ```

@@ -28,8 +28,10 @@ What actually happened (include any console logs, crash traces, or error message
 
 ### 💻 Environment Details
 * **OS**: macOS / Windows / Linux (specify version)
-* **Codey Version**: Run `codey --version` to check (e.g. `v3.5.1`)
+* **Codey Version**: Run `codey --version` to check (e.g. `v3.6.2`)
+* **Surface**: Desktop app / Terminal TUI / VS Code extension
 * **Terminal/Shell**: (e.g., bash, zsh, powershell, git-bash)
+* **Tier**: Free / Pro
 
 ### 🖼️ Attachments
 Add any screenshots or video recordings showing the bug in action.
